@@ -3,7 +3,7 @@ import mysql from "mysql2/promise";
 const pool = await mysql.createPool({
   host: "localhost",
   user: "root",
-  database: "db_belajar_express",
+  database: "db_learn_express",
 });
 
 export default pool
