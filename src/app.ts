@@ -24,8 +24,6 @@ const streamerSchema = z.object({
   views: z.coerce.number().int().min(0),
 });
 
-// Upload buffer dari multer (memoryStorage) ke Cloudinary.
-// Hasilnya langsung kelihatan di dashboard Cloudinary > Media Library > streamers.
 const uploadBufferToCloudinary = async (
   buffer: Buffer,
   mimetype: string,
@@ -41,7 +39,6 @@ const uploadBufferToCloudinary = async (
 app.post("/api/register", authController.register);
 app.post("/api/login", authController.login);
 
-// Ambil user yang sedang login (kayak /get-user di tutorial)
 app.get("/api/me", verifyToken, async (req, res) => {
   try {
     const userId = (req as any).user.id;
