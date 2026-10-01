@@ -1,17 +1,16 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import jwt from "jsonwebtoken";
 import { z } from "zod";
 import pool from "./db/index.ts";
 import cloudinary from "./config/cloudinary.ts";
+import authController from "./auth/auth.controller.ts";
+import { verifyToken } from "./middleware/auth.ts";
 
 dotenv.config();
 
 const app = express();
 const port = 8000;
-
-const JWT_SECRET = "rahasia-jwt-123";
 
 app.use(cors());
 app.use(express.json());
@@ -32,32 +31,30 @@ const uploadToCloudinary = async (imageUrl: string): Promise<string> => {
   return result.secure_url;
 };
 
-app.post("/api/login", (req, res) => {
-  const { username, password } = req.body;
+app.post("/api/register", authController.register);
+app.post("/api/login", authController.login);
 
-  if (username !== "admin" || password !== "12345") {
-    return res.status(401).json({
-      message: "Username atau password salah",
-    });
+// Ambil user yang sedang login (kayak /get-user di tutorial)
+app.get("/api/me", verifyToken, async (req, res) => {
+  try {
+    const userId = (req as any).user.id;
+    const [rows]: any = await pool.query(
+      "SELECT id, username, email FROM users WHERE id = ? LIMIT 1",
+      [userId],
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "User tidak ditemukan" });
+    }
+
+    res.json({ message: "Fetch Successfully.", data: rows[0] });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Gagal mengambil user" });
   }
-
-  const token = jwt.sign(
-    {
-      username: username,
-    },
-    JWT_SECRET,
-    {
-      expiresIn: "1h",
-    },
-  );
-
-  res.json({
-    message: "Login berhasil",
-    token: token,
-  });
 });
 
-app.get("/api/streamers", async (req, res) => {
+app.get("/api/streamers", verifyToken, async (req, res) => {
   try {
     const [rows] = await pool.query("SELECT * FROM streamers");
 
@@ -74,7 +71,7 @@ app.get("/api/streamers", async (req, res) => {
   }
 });
 
-app.post("/api/streamers", async (req, res) => {
+app.post("/api/streamers", verifyToken, async (req, res) => {
   try {
     const validation = streamerSchema.safeParse(req.body);
 
@@ -117,7 +114,7 @@ app.post("/api/streamers", async (req, res) => {
   }
 });
 
-app.put("/api/streamers/:id", async (req, res) => {
+app.put("/api/streamers/:id", verifyToken, async (req, res) => {
   try {
     const id = Number(req.params.id);
 
@@ -164,7 +161,7 @@ app.put("/api/streamers/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/streamers/:id", async (req, res) => {
+app.delete("/api/streamers/:id", verifyToken, async (req, res) => {
   try {
     const id = Number(req.params.id);
 
