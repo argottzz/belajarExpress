@@ -26,13 +26,22 @@ const streamerSchema = z.object({
   views: z.coerce.number().int().min(0),
 });
 
+const youtuberSchema = z.object({
+  nama_youtuber: z.string().min(1).max(100),
+  kategori: z.string().min(1).max(50),
+  subscriber: z.coerce.number().int().min(0),
+  views: z.coerce.number().int().min(0),
+  total_video: z.coerce.number().int().min(0),
+});
+
 const uploadBufferToCloudinary = async (
   buffer: Buffer,
   mimetype: string,
+  folder: string,
 ): Promise<{ secure_url: string; public_id: string }> => {
   const dataURI = `data:${mimetype};base64,${buffer.toString("base64")}`;
   const result = await cloudinary.uploader.upload(dataURI, {
-    folder: "streamers",
+    folder,
   });
 
   return { secure_url: result.secure_url, public_id: result.public_id };
@@ -103,6 +112,7 @@ app.post(
       const { secure_url, public_id } = await uploadBufferToCloudinary(
         req.file.buffer,
         req.file.mimetype,
+        "streamers",
       );
 
       await pool.query(
@@ -170,6 +180,7 @@ app.put(
         const uploaded = await uploadBufferToCloudinary(
           req.file.buffer,
           req.file.mimetype,
+          "streamers",
         );
         image_url = uploaded.secure_url;
         public_id = uploaded.public_id;
@@ -215,6 +226,245 @@ app.put(
     }
   },
 );
+
+app.get("/api/youtubers", verifyToken, async (req, res) => {
+  try {
+    const [rows] = await pool.query("SELECT * FROM youtubers");
+
+    res.json({
+      message: "Berhasil mengambil data youtuber",
+      data: rows,
+    });
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      message: "Gagal mengambil data youtuber",
+    });
+  }
+});
+
+app.post(
+  "/api/youtubers",
+  verifyToken,
+  upload.single("image"),
+  async (req, res) => {
+    try {
+      const validation = youtuberSchema.safeParse(req.body);
+
+      if (!validation.success) {
+        return res.status(400).json({
+          message: "Data tidak valid",
+          error: validation.error.issues,
+        });
+      }
+
+      const { nama_youtuber, kategori, subscriber, views, total_video } =
+        validation.data;
+      let image_url: string | null = null;
+      let public_id: string | null = null;
+
+      if (req.file) {
+        const uploaded = await uploadBufferToCloudinary(
+          req.file.buffer,
+          req.file.mimetype,
+          "youtubers",
+        );
+        image_url = uploaded.secure_url;
+        public_id = uploaded.public_id;
+      }
+
+      await pool.query(
+        `INSERT INTO youtubers
+        (nama_youtuber, kategori, subscriber, views, total_video, image_url, public_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          nama_youtuber,
+          kategori,
+          subscriber,
+          views,
+          total_video,
+          image_url,
+          public_id,
+        ],
+      );
+
+      res.status(201).json({
+        message: "Berhasil menambahkan youtuber",
+        data: {
+          nama_youtuber,
+          kategori,
+          subscriber,
+          views,
+          total_video,
+          image_url,
+          public_id,
+        },
+      });
+    } catch (error) {
+      console.error("ERROR POST YOUTUBER:", error);
+
+      res.status(500).json({
+        message: "Gagal menambahkan youtuber",
+        error: error instanceof Error ? error.message : error,
+      });
+    }
+  },
+);
+
+app.put(
+  "/api/youtubers/:id",
+  verifyToken,
+  upload.single("image"),
+  async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        return res.status(400).json({
+          message: "ID youtuber tidak valid",
+        });
+      }
+
+      const validation = youtuberSchema.safeParse(req.body);
+
+      if (!validation.success) {
+        return res.status(400).json({
+          message: "Data tidak valid",
+          error: validation.error.issues,
+        });
+      }
+
+      const [existing]: any = await pool.query(
+        "SELECT image_url, public_id FROM youtubers WHERE id = ? LIMIT 1",
+        [id],
+      );
+
+      if (existing.length === 0) {
+        return res.status(404).json({
+          message: "Youtuber tidak ditemukan",
+        });
+      }
+
+      const { nama_youtuber, kategori, subscriber, views, total_video } =
+        validation.data;
+      let image_url: string | null = existing[0].image_url;
+      let public_id: string | null = existing[0].public_id;
+      let previous_public_id: string | null = null;
+
+      if (req.file) {
+        const uploaded = await uploadBufferToCloudinary(
+          req.file.buffer,
+          req.file.mimetype,
+          "youtubers",
+        );
+        image_url = uploaded.secure_url;
+        public_id = uploaded.public_id;
+        previous_public_id = existing[0].public_id ?? null;
+      }
+
+      const [result]: any = await pool.query(
+        `UPDATE youtubers
+        SET nama_youtuber = ?,
+            kategori = ?,
+            subscriber = ?,
+            views = ?,
+            total_video = ?,
+            image_url = ?,
+            public_id = ?
+        WHERE id = ?`,
+        [
+          nama_youtuber,
+          kategori,
+          subscriber,
+          views,
+          total_video,
+          image_url,
+          public_id,
+          id,
+        ],
+      );
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({
+          message: "Youtuber tidak ditemukan",
+        });
+      }
+
+      if (previous_public_id) {
+        await cloudinary.uploader.destroy(previous_public_id);
+      }
+
+      res.json({
+        message: "Berhasil mengubah youtuber",
+        data: {
+          id,
+          nama_youtuber,
+          kategori,
+          subscriber,
+          views,
+          total_video,
+          image_url,
+          public_id,
+        },
+      });
+    } catch (error) {
+      console.error("ERROR PUT YOUTUBER:", error);
+
+      res.status(500).json({
+        message: "Gagal mengubah youtuber",
+      });
+    }
+  },
+);
+
+app.delete("/api/youtubers/:id", verifyToken, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      return res.status(400).json({
+        message: "ID youtuber tidak valid",
+      });
+    }
+
+    const [existing]: any = await pool.query(
+      "SELECT public_id FROM youtubers WHERE id = ? LIMIT 1",
+      [id],
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({
+        message: "Youtuber tidak ditemukan",
+      });
+    }
+
+    if (existing[0].public_id) {
+      await cloudinary.uploader.destroy(existing[0].public_id);
+    }
+
+    const [result]: any = await pool.query(
+      "DELETE FROM youtubers WHERE id = ?",
+      [id],
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        message: "Youtuber tidak ditemukan",
+      });
+    }
+
+    res.json({
+      message: "Berhasil menghapus youtuber",
+    });
+  } catch (error) {
+    console.error("ERROR DELETE YOUTUBER:", error);
+
+    res.status(500).json({
+      message: "Gagal menghapus youtuber",
+    });
+  }
+});
 
 app.delete("/api/users/:id", verifyToken, adminMiddleware, async (req, res) => {
   try {
