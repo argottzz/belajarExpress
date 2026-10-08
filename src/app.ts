@@ -6,8 +6,10 @@ import { z } from "zod";
 import pool from "./db/index.ts";
 import cloudinary from "./config/cloudinary.ts";
 import authController from "./auth/auth.controller.ts";
+import { adminMiddleware } from "./middleware/adminMiddleware.ts";
 import { verifyToken } from "./middleware/auth.ts";
 import upload from "./middleware/upload.ts";
+
 
 dotenv.config();
 
@@ -164,7 +166,6 @@ app.put(
       let image_url: string = "";
       let public_id: string | null = existing[0].public_id ?? null;
 
-      // Kalau ada file baru, upload lalu hapus gambar lama di Cloudinary
       if (req.file) {
         const uploaded = await uploadBufferToCloudinary(
           req.file.buffer,
@@ -215,38 +216,34 @@ app.put(
   },
 );
 
-app.delete("/api/streamers/:id", verifyToken, async (req, res) => {
+app.delete("/api/users/:id", verifyToken, adminMiddleware, async (req, res) => {
   try {
     const id = Number(req.params.id);
 
-    const [existing]: any = await pool.query(
-      "SELECT public_id FROM streamers WHERE id = ? LIMIT 1",
-      [id],
-    );
-
-    const [result]: any = await pool.query(
-      "DELETE FROM streamers WHERE id = ?",
-      [id],
-    );
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({
-        message: "Streamer tidak ditemukan",
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      return res.status(400).json({
+        message: "ID user tidak valid",
       });
     }
 
-    if (existing.length > 0 && existing[0].public_id) {
-      await cloudinary.uploader.destroy(existing[0].public_id);
+    const [result]: any = await pool.query("DELETE FROM users WHERE id = ?", [
+      id,
+    ]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        message: "User tidak ditemukan",
+      });
     }
 
     res.json({
-      message: "Berhasil menghapus streamer",
+      message: "Berhasil menghapus user",
     });
   } catch (error) {
     console.error(error);
 
     res.status(500).json({
-      message: "Gagal menghapus streamer",
+      message: "Gagal menghapus user",
     });
   }
 });

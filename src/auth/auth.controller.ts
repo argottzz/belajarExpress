@@ -1,5 +1,4 @@
 import type { Request, Response } from "express";
-import bcrypt from "bcryptjs";
 import dotenv from "dotenv";
 import jwt from "jsonwebtoken";
 import pool from "../db/index.ts";
@@ -36,16 +35,18 @@ export class AuthController {
         });
       }
 
-      const hashedPassword = await bcrypt.hash(password, 10);
-
       const [result]: any = await pool.query(
         "INSERT INTO users (username, email, password) VALUES (?, ?, ?)",
-        [username, email, hashedPassword],
+        [username, email, password],
       );
 
-      const token = jwt.sign({ id: result.insertId, email }, JWT_SECRET, {
-        expiresIn: "1h",
-      });
+      const token = jwt.sign(
+        { id: result.insertId, username, email, role: "user" },
+        JWT_SECRET,
+        {
+          expiresIn: "1h",
+        },
+      );
 
       return res.status(201).json({
         success: true,
@@ -89,7 +90,7 @@ export class AuthController {
       }
 
       const user = rows[0];
-      const isMatch = await bcrypt.compare(password, user.password);
+      const isMatch = password === user.password;
 
       if (!isMatch) {
         return res.status(401).json({
@@ -99,7 +100,7 @@ export class AuthController {
       }
 
       const token = jwt.sign(
-        { id: user.id, email: user.email, username: user.username },
+        { id: user.id, email: user.email, username: user.username, role: user.role },
         JWT_SECRET,
         { expiresIn: "1h" },
       );
@@ -108,7 +109,12 @@ export class AuthController {
         success: true,
         message: "Login berhasil",
         token,
-        data: { id: user.id, username: user.username, email: user.email },
+        data: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          role: user.role,
+        },
       });
     } catch (error) {
       console.error("ERROR LOGIN:", error);
