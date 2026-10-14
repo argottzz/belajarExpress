@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import multer from "multer";
+import jwt from "jsonwebtoken";
 import { z } from "zod";
 import pool from "./db/index.ts";
 import cloudinary from "./config/cloudinary.ts";
@@ -564,7 +565,7 @@ app.get("/api/videos/public", async (req, res) => {
   }
 });
 
-app.get("/api/videos/:id", verifyToken, async (req, res) => {
+app.get("/api/videos/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
 
@@ -575,7 +576,8 @@ app.get("/api/videos/:id", verifyToken, async (req, res) => {
     }
 
     const [rows]: any = await pool.query(
-      `SELECT v.*, c.name AS channel_name, u.username AS owner_username
+      `SELECT v.*, c.name AS channel_name, c.user_id AS channel_owner_id,
+        u.username AS owner_username
        FROM videos v
        JOIN channels c ON v.channel_id = c.id
        JOIN users u ON c.user_id = u.id
@@ -589,9 +591,45 @@ app.get("/api/videos/:id", verifyToken, async (req, res) => {
       });
     }
 
+    const video = rows[0];
+
+    // Video public dapat diakses tanpa token.
+    if (video.visibility !== "public") {
+      const authHeader = req.headers.authorization;
+      const token =
+        authHeader?.startsWith("Bearer ") && authHeader.split(" ")[1]
+          ? authHeader.split(" ")[1]
+          : null;
+
+      if (!token) {
+        return res.status(422).json({
+          message: "Please provide the token",
+        });
+      }
+
+      try {
+        const decoded: any = jwt.verify(
+          token,
+          process.env.JWT_SECRET ?? "rahasia-jwt-123",
+        );
+        const isOwner = video.channel_owner_id === decoded.id;
+        const isAdmin = decoded.role === "admin";
+
+        if (!isOwner && !isAdmin) {
+          return res.status(403).json({
+            message: "Akses ditolak. Video ini tidak publik.",
+          });
+        }
+      } catch {
+        return res.status(401).json({
+          message: "Token tidak valid atau kadaluarsa",
+        });
+      }
+    }
+
     res.json({
       message: "Berhasil mengambil detail video",
-      data: rows[0],
+      data: video,
     });
   } catch (error) {
     console.error(error);
