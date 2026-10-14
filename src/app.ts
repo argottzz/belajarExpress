@@ -93,7 +93,7 @@ app.get("/api/channels", verifyToken, async (req, res) => {
   }
 });
 
-app.get("/api/channels/:id", verifyToken, async (req, res) => {
+app.get("/api/channels/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
 
@@ -117,14 +117,41 @@ app.get("/api/channels/:id", verifyToken, async (req, res) => {
       });
     }
 
-    const [videos] = await pool.query(
+    const [videos]: any = await pool.query(
       "SELECT * FROM videos WHERE channel_id = ? ORDER BY created_at DESC",
       [id],
     );
 
+    // Tamu hanya boleh melihat video public milik channel.
+    let requester: any = null;
+    const authHeader = req.headers.authorization;
+    const token =
+      authHeader?.startsWith("Bearer ") && authHeader.split(" ")[1]
+        ? authHeader.split(" ")[1]
+        : null;
+
+    if (token) {
+      try {
+        requester = jwt.verify(
+          token,
+          process.env.JWT_SECRET ?? "rahasia-jwt-123",
+        );
+      } catch {
+        // Token tidak valid dianggap sebagai tamu.
+      }
+    }
+
+    const channel = rows[0];
+    const isOwner = requester && channel.user_id === requester.id;
+    const isAdmin = requester && requester.role === "admin";
+    const visibleVideos =
+      isOwner || isAdmin
+        ? videos
+        : videos.filter((v: any) => v.visibility === "public");
+
     res.json({
       message: "Berhasil mengambil detail channel",
-      data: { ...rows[0], videos },
+      data: { ...channel, videos: visibleVideos },
     });
   } catch (error) {
     console.error(error);
