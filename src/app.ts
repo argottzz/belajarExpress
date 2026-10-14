@@ -502,6 +502,68 @@ app.get("/api/videos", verifyToken, async (req, res) => {
   }
 });
 
+app.get("/api/videos/public", async (req, res) => {
+  try {
+    const search =
+      typeof req.query.search === "string" ? req.query.search.trim() : "";
+    const category =
+      typeof req.query.category === "string"
+        ? req.query.category.trim()
+        : "";
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 12));
+    const offset = (page - 1) * limit;
+
+    const where = ["v.visibility = 'public'"];
+    const params: any[] = [];
+
+    if (search) {
+      where.push("(v.title LIKE ? OR v.description LIKE ? OR c.name LIKE ?)");
+      const like = `%${search}%`;
+      params.push(like, like, like);
+    }
+
+    if (category) {
+      where.push("v.category = ?");
+      params.push(category);
+    }
+
+    const base = `FROM videos v
+       JOIN channels c ON v.channel_id = c.id
+       JOIN users u ON c.user_id = u.id
+       WHERE ${where.join(" AND ")}`;
+
+    const [[{ total }]]: any = await pool.query(
+      `SELECT COUNT(*) AS total ${base}`,
+      params,
+    );
+
+    const [rows] = await pool.query(
+      `SELECT v.*, c.name AS channel_name, c.avatar_url AS channel_avatar,
+        u.username AS owner_username
+       ${base} ORDER BY v.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
+      params,
+    );
+
+    res.json({
+      message: "Berhasil mengambil video publik",
+      data: rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      message: "Gagal mengambil video publik",
+    });
+  }
+});
+
 app.get("/api/videos/:id", verifyToken, async (req, res) => {
   try {
     const id = Number(req.params.id);
