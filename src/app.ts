@@ -25,12 +25,14 @@ const channelSchema = z.object({
   subscriber_count: z.coerce.number().int().min(0).optional().default(0),
 });
 
-const youtuberSchema = z.object({
-  nama_youtuber: z.string().min(1).max(100),
-  kategori: z.string().min(1).max(50),
-  subscriber: z.coerce.number().int().min(0),
-  views: z.coerce.number().int().min(0),
-  total_video: z.coerce.number().int().min(0),
+const videoSchema = z.object({
+  channel_id: z.coerce.number().int().positive(),
+  title: z.string().min(1).max(200),
+  description: z.string().max(10000).optional().nullable(),
+  category: z.string().max(50).optional().nullable(),
+  duration_seconds: z.coerce.number().int().min(0).optional().default(0),
+  views_count: z.coerce.number().int().min(0).optional().default(0),
+  visibility: z.enum(["public", "private", "unlisted"]).optional().default("public"),
 });
 
 const uploadBufferToCloudinary = async (
@@ -443,30 +445,108 @@ app.delete("/api/channels/:id", verifyToken, async (req, res) => {
   }
 });
 
-app.get("/api/youtubers", verifyToken, async (req, res) => {
+app.get("/api/videos", verifyToken, async (req, res) => {
   try {
-    const [rows] = await pool.query("SELECT * FROM youtubers");
+    const channelId = req.query.channel_id
+      ? Number(req.query.channel_id)
+      : undefined;
+    const visibility =
+      typeof req.query.visibility === "string"
+        ? req.query.visibility
+        : undefined;
+
+    let sql = `SELECT v.*, c.name AS channel_name, u.username AS owner_username
+       FROM videos v
+       JOIN channels c ON v.channel_id = c.id
+       JOIN users u ON c.user_id = u.id`;
+    const params: any[] = [];
+    const where: string[] = [];
+
+    if (channelId !== undefined) {
+      if (!Number.isSafeInteger(channelId) || channelId <= 0) {
+        return res.status(400).json({
+          message: "channel_id tidak valid",
+        });
+      }
+      where.push("v.channel_id = ?");
+      params.push(channelId);
+    }
+
+    if (visibility !== undefined) {
+      if (!["public", "private", "unlisted"].includes(visibility)) {
+        return res.status(400).json({
+          message: "visibility tidak valid",
+        });
+      }
+      where.push("v.visibility = ?");
+      params.push(visibility);
+    }
+
+    if (where.length > 0) {
+      sql += " WHERE " + where.join(" AND ");
+    }
+    sql += " ORDER BY v.created_at DESC";
+
+    const [rows] = await pool.query(sql, params);
 
     res.json({
-      message: "Berhasil mengambil data youtuber",
+      message: "Berhasil mengambil data video",
       data: rows,
     });
   } catch (error) {
     console.error(error);
 
     res.status(500).json({
-      message: "Gagal mengambil data youtuber",
+      message: "Gagal mengambil data video",
+    });
+  }
+});
+
+app.get("/api/videos/:id", verifyToken, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      return res.status(400).json({
+        message: "ID video tidak valid",
+      });
+    }
+
+    const [rows]: any = await pool.query(
+      `SELECT v.*, c.name AS channel_name, u.username AS owner_username
+       FROM videos v
+       JOIN channels c ON v.channel_id = c.id
+       JOIN users u ON c.user_id = u.id
+       WHERE v.id = ? LIMIT 1`,
+      [id],
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({
+        message: "Video tidak ditemukan",
+      });
+    }
+
+    res.json({
+      message: "Berhasil mengambil detail video",
+      data: rows[0],
+    });
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      message: "Gagal mengambil detail video",
     });
   }
 });
 
 app.post(
-  "/api/youtubers",
+  "/api/videos",
   verifyToken,
   upload.single("image"),
   async (req, res) => {
     try {
-      const validation = youtuberSchema.safeParse(req.body);
+      const validation = videoSchema.safeParse(req.body);
 
       if (!validation.success) {
         return res.status(400).json({
@@ -475,53 +555,87 @@ app.post(
         });
       }
 
-      const { nama_youtuber, kategori, subscriber, views, total_video } =
-        validation.data;
+      const {
+        channel_id,
+        title,
+        description,
+        category,
+        duration_seconds,
+        views_count,
+        visibility,
+      } = validation.data;
+
+      const [channels]: any = await pool.query(
+        "SELECT id, user_id FROM channels WHERE id = ? LIMIT 1",
+        [channel_id],
+      );
+
+      if (channels.length === 0) {
+        return res.status(404).json({
+          message: "Channel tidak ditemukan",
+        });
+      }
+
+      const requester = (req as any).user;
+      const isOwner = channels[0].user_id === requester.id;
+      const isAdmin = requester.role === "admin";
+
+      if (!isOwner && !isAdmin) {
+        return res.status(403).json({
+          message: "Akses ditolak. Bukan pemilik channel.",
+        });
+      }
+
       let image_url: string | null = null;
-      let public_id: string | null = null;
+      let image_public_id: string | null = null;
 
       if (req.file) {
         const uploaded = await uploadBufferToCloudinary(
           req.file.buffer,
           req.file.mimetype,
-          "youtubers",
+          "videos/thumbnails",
         );
         image_url = uploaded.secure_url;
-        public_id = uploaded.public_id;
+        image_public_id = uploaded.public_id;
       }
 
-      await pool.query(
-        `INSERT INTO youtubers
-        (nama_youtuber, kategori, subscriber, views, total_video, image_url, public_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      const [result]: any = await pool.query(
+        `INSERT INTO videos
+        (channel_id, title, description, category, image_url, image_public_id, duration_seconds, views_count, visibility)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          nama_youtuber,
-          kategori,
-          subscriber,
-          views,
-          total_video,
+          channel_id,
+          title,
+          description ?? null,
+          category ?? null,
           image_url,
-          public_id,
+          image_public_id,
+          duration_seconds ?? 0,
+          views_count ?? 0,
+          visibility ?? "public",
         ],
       );
 
       res.status(201).json({
-        message: "Berhasil menambahkan youtuber",
+        message: "Berhasil menambahkan video",
         data: {
-          nama_youtuber,
-          kategori,
-          subscriber,
-          views,
-          total_video,
+          id: result.insertId,
+          channel_id,
+          title,
+          description: description ?? null,
+          category: category ?? null,
           image_url,
-          public_id,
+          image_public_id,
+          duration_seconds: duration_seconds ?? 0,
+          views_count: views_count ?? 0,
+          visibility: visibility ?? "public",
         },
       });
     } catch (error) {
-      console.error("ERROR POST YOUTUBER:", error);
+      console.error("ERROR POST VIDEO:", error);
 
       res.status(500).json({
-        message: "Gagal menambahkan youtuber",
+        message: "Gagal menambahkan video",
         error: error instanceof Error ? error.message : error,
       });
     }
@@ -529,7 +643,7 @@ app.post(
 );
 
 app.put(
-  "/api/youtubers/:id",
+  "/api/videos/:id",
   verifyToken,
   upload.single("image"),
   async (req, res) => {
@@ -538,11 +652,11 @@ app.put(
 
       if (!Number.isSafeInteger(id) || id <= 0) {
         return res.status(400).json({
-          message: "ID youtuber tidak valid",
+          message: "ID video tidak valid",
         });
       }
 
-      const validation = youtuberSchema.safeParse(req.body);
+      const validation = videoSchema.safeParse(req.body);
 
       if (!validation.success) {
         return res.status(400).json({
@@ -552,58 +666,101 @@ app.put(
       }
 
       const [existing]: any = await pool.query(
-        "SELECT image_url, public_id FROM youtubers WHERE id = ? LIMIT 1",
+        `SELECT v.*, c.user_id AS owner_id
+         FROM videos v
+         JOIN channels c ON v.channel_id = c.id
+         WHERE v.id = ? LIMIT 1`,
         [id],
       );
 
       if (existing.length === 0) {
         return res.status(404).json({
-          message: "Youtuber tidak ditemukan",
+          message: "Video tidak ditemukan",
         });
       }
 
-      const { nama_youtuber, kategori, subscriber, views, total_video } =
-        validation.data;
+      const requester = (req as any).user;
+      const isOwner = existing[0].owner_id === requester.id;
+      const isAdmin = requester.role === "admin";
+
+      if (!isOwner && !isAdmin) {
+        return res.status(403).json({
+          message: "Akses ditolak. Bukan pemilik video.",
+        });
+      }
+
+      const {
+        channel_id,
+        title,
+        description,
+        category,
+        duration_seconds,
+        views_count,
+        visibility,
+      } = validation.data;
+
+      const [targetChannel]: any = await pool.query(
+        "SELECT id, user_id FROM channels WHERE id = ? LIMIT 1",
+        [channel_id],
+      );
+
+      if (targetChannel.length === 0) {
+        return res.status(404).json({
+          message: "Channel tujuan tidak ditemukan",
+        });
+      }
+
+      const isTargetOwner = targetChannel[0].user_id === requester.id;
+      if (!isTargetOwner && !isAdmin) {
+        return res.status(403).json({
+          message: "Akses ditolak. Bukan pemilik channel tujuan.",
+        });
+      }
+
       let image_url: string | null = existing[0].image_url;
-      let public_id: string | null = existing[0].public_id;
+      let image_public_id: string | null = existing[0].image_public_id;
       let previous_public_id: string | null = null;
 
       if (req.file) {
         const uploaded = await uploadBufferToCloudinary(
           req.file.buffer,
           req.file.mimetype,
-          "youtubers",
+          "videos/thumbnails",
         );
         image_url = uploaded.secure_url;
-        public_id = uploaded.public_id;
-        previous_public_id = existing[0].public_id ?? null;
+        image_public_id = uploaded.public_id;
+        previous_public_id = existing[0].image_public_id ?? null;
       }
 
       const [result]: any = await pool.query(
-        `UPDATE youtubers
-        SET nama_youtuber = ?,
-            kategori = ?,
-            subscriber = ?,
-            views = ?,
-            total_video = ?,
+        `UPDATE videos
+        SET channel_id = ?,
+            title = ?,
+            description = ?,
+            category = ?,
             image_url = ?,
-            public_id = ?
+            image_public_id = ?,
+            duration_seconds = ?,
+            views_count = ?,
+            visibility = ?
         WHERE id = ?`,
         [
-          nama_youtuber,
-          kategori,
-          subscriber,
-          views,
-          total_video,
+          channel_id,
+          title,
+          description ?? null,
+          category ?? null,
           image_url,
-          public_id,
+          image_public_id,
+          duration_seconds ?? 0,
+          views_count ?? 0,
+          visibility ?? "public",
           id,
         ],
       );
 
       if (result.affectedRows === 0) {
         return res.status(404).json({
-          message: "Youtuber tidak ditemukan",
+          message: "Video tidak ditemukan",
         });
       }
 
@@ -612,72 +769,86 @@ app.put(
       }
 
       res.json({
-        message: "Berhasil mengubah youtuber",
+        message: "Berhasil mengubah video",
         data: {
           id,
-          nama_youtuber,
-          kategori,
-          subscriber,
-          views,
-          total_video,
+          channel_id,
+          title,
+          description: description ?? null,
+          category: category ?? null,
           image_url,
-          public_id,
+          image_public_id,
+          duration_seconds: duration_seconds ?? 0,
+          views_count: views_count ?? 0,
+          visibility: visibility ?? "public",
         },
       });
     } catch (error) {
-      console.error("ERROR PUT YOUTUBER:", error);
+      console.error("ERROR PUT VIDEO:", error);
 
       res.status(500).json({
-        message: "Gagal mengubah youtuber",
+        message: "Gagal mengubah video",
       });
     }
   },
 );
 
-app.delete("/api/youtubers/:id", verifyToken, async (req, res) => {
+app.delete("/api/videos/:id", verifyToken, async (req, res) => {
   try {
     const id = Number(req.params.id);
 
     if (!Number.isSafeInteger(id) || id <= 0) {
       return res.status(400).json({
-        message: "ID youtuber tidak valid",
+        message: "ID video tidak valid",
       });
     }
 
     const [existing]: any = await pool.query(
-      "SELECT public_id FROM youtubers WHERE id = ? LIMIT 1",
+      `SELECT v.*, c.user_id AS owner_id
+       FROM videos v
+       JOIN channels c ON v.channel_id = c.id
+       WHERE v.id = ? LIMIT 1`,
       [id],
     );
 
     if (existing.length === 0) {
       return res.status(404).json({
-        message: "Youtuber tidak ditemukan",
+        message: "Video tidak ditemukan",
       });
     }
 
-    if (existing[0].public_id) {
-      await cloudinary.uploader.destroy(existing[0].public_id);
+    const requester = (req as any).user;
+    const isOwner = existing[0].owner_id === requester.id;
+    const isAdmin = requester.role === "admin";
+
+    if (!isOwner && !isAdmin) {
+      return res.status(403).json({
+        message: "Akses ditolak. Bukan pemilik video.",
+      });
     }
 
-    const [result]: any = await pool.query(
-      "DELETE FROM youtubers WHERE id = ?",
-      [id],
-    );
+    if (existing[0].image_public_id) {
+      await cloudinary.uploader.destroy(existing[0].image_public_id);
+    }
+
+    const [result]: any = await pool.query("DELETE FROM videos WHERE id = ?", [
+      id,
+    ]);
 
     if (result.affectedRows === 0) {
       return res.status(404).json({
-        message: "Youtuber tidak ditemukan",
+        message: "Video tidak ditemukan",
       });
     }
 
     res.json({
-      message: "Berhasil menghapus youtuber",
+      message: "Berhasil menghapus video",
     });
   } catch (error) {
-    console.error("ERROR DELETE YOUTUBER:", error);
+    console.error("ERROR DELETE VIDEO:", error);
 
     res.status(500).json({
-      message: "Gagal menghapus youtuber",
+      message: "Gagal menghapus video",
     });
   }
 });
