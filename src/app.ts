@@ -19,11 +19,10 @@ const port = 8000;
 app.use(cors());
 app.use(express.json());
 
-const streamerSchema = z.object({
-  namast: z.string().min(1).max(50),
-  kategorist: z.string().min(1).max(50),
-  subscriber: z.coerce.number().int().min(0),
-  views: z.coerce.number().int().min(0),
+const channelSchema = z.object({
+  name: z.string().min(1).max(100),
+  description: z.string().max(5000).optional().nullable(),
+  subscriber_count: z.coerce.number().int().min(0).optional().default(0),
 });
 
 const youtuberSchema = z.object({
@@ -69,30 +68,80 @@ app.get("/api/me", verifyToken, async (req, res) => {
   }
 });
 
-app.get("/api/streamers", verifyToken, async (req, res) => {
+app.get("/api/channels", verifyToken, async (req, res) => {
   try {
-    const [rows] = await pool.query("SELECT * FROM streamers");
+    const [rows] = await pool.query(
+      `SELECT c.*, u.username AS owner_username
+       FROM channels c
+       JOIN users u ON c.user_id = u.id
+       ORDER BY c.created_at DESC`,
+    );
 
     res.json({
-      message: "Berhasil mengambil data streamer",
+      message: "Berhasil mengambil data channel",
       data: rows,
     });
   } catch (error) {
     console.error(error);
 
     res.status(500).json({
-      message: "Gagal mengambil data streamer",
+      message: "Gagal mengambil data channel",
+    });
+  }
+});
+
+app.get("/api/channels/:id", verifyToken, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      return res.status(400).json({
+        message: "ID channel tidak valid",
+      });
+    }
+
+    const [rows]: any = await pool.query(
+      `SELECT c.*, u.username AS owner_username
+       FROM channels c
+       JOIN users u ON c.user_id = u.id
+       WHERE c.id = ? LIMIT 1`,
+      [id],
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({
+        message: "Channel tidak ditemukan",
+      });
+    }
+
+    const [videos] = await pool.query(
+      "SELECT * FROM videos WHERE channel_id = ? ORDER BY created_at DESC",
+      [id],
+    );
+
+    res.json({
+      message: "Berhasil mengambil detail channel",
+      data: { ...rows[0], videos },
+    });
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      message: "Gagal mengambil detail channel",
     });
   }
 });
 
 app.post(
-  "/api/streamers",
+  "/api/channels",
   verifyToken,
-  upload.single("image"),
+  upload.fields([
+    { name: "avatar", maxCount: 1 },
+    { name: "banner", maxCount: 1 },
+  ]),
   async (req, res) => {
     try {
-      const validation = streamerSchema.safeParse(req.body);
+      const validation = channelSchema.safeParse(req.body);
 
       if (!validation.success) {
         return res.status(400).json({
@@ -101,43 +150,83 @@ app.post(
         });
       }
 
-      if (!req.file) {
+      const userId = (req as any).user.id;
+      const [owned]: any = await pool.query(
+        "SELECT id FROM channels WHERE user_id = ? LIMIT 1",
+        [userId],
+      );
+
+      if (owned.length > 0) {
         return res.status(400).json({
-          message: "Gambar wajib diupload (field: image)",
+          message: "User sudah memiliki channel",
         });
       }
 
-      const { namast, kategorist, subscriber, views } = validation.data;
+      const { name, description, subscriber_count } = validation.data;
+      const files = req.files as
+        | { [fieldname: string]: Express.Multer.File[] }
+        | undefined;
 
-      const { secure_url, public_id } = await uploadBufferToCloudinary(
-        req.file.buffer,
-        req.file.mimetype,
-        "streamers",
-      );
+      let avatar_url: string | null = null;
+      let avatar_public_id: string | null = null;
+      let banner_url: string | null = null;
+      let banner_public_id: string | null = null;
 
-      await pool.query(
-        `INSERT INTO streamers
-      (namast, kategorist, subscriber, views, image_url, public_id)
-      VALUES (?, ?, ?, ?, ?, ?)`,
-        [namast, kategorist, subscriber, views, secure_url, public_id],
+      if (files?.avatar?.[0]) {
+        const uploaded = await uploadBufferToCloudinary(
+          files.avatar[0].buffer,
+          files.avatar[0].mimetype,
+          "channels/avatars",
+        );
+        avatar_url = uploaded.secure_url;
+        avatar_public_id = uploaded.public_id;
+      }
+
+      if (files?.banner?.[0]) {
+        const uploaded = await uploadBufferToCloudinary(
+          files.banner[0].buffer,
+          files.banner[0].mimetype,
+          "channels/banners",
+        );
+        banner_url = uploaded.secure_url;
+        banner_public_id = uploaded.public_id;
+      }
+
+      const [result]: any = await pool.query(
+        `INSERT INTO channels
+        (user_id, name, description, avatar_url, avatar_public_id, banner_url, banner_public_id, subscriber_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          userId,
+          name,
+          description ?? null,
+          avatar_url,
+          avatar_public_id,
+          banner_url,
+          banner_public_id,
+          subscriber_count ?? 0,
+        ],
       );
 
       res.status(201).json({
-        message: "Berhasil menambahkan streamer",
+        message: "Berhasil menambahkan channel",
         data: {
-          namast,
-          kategorist,
-          subscriber,
-          views,
-          image_url: secure_url,
-          public_id,
+          id: result.insertId,
+          user_id: userId,
+          name,
+          description: description ?? null,
+          avatar_url,
+          avatar_public_id,
+          banner_url,
+          banner_public_id,
+          subscriber_count: subscriber_count ?? 0,
         },
       });
     } catch (error) {
-      console.error("ERROR POST STREAMER:", error);
+      console.error("ERROR POST CHANNEL:", error);
 
       res.status(500).json({
-        message: "Gagal menambahkan streamer",
+        message: "Gagal menambahkan channel",
         error: error instanceof Error ? error.message : error,
       });
     }
@@ -145,14 +234,23 @@ app.post(
 );
 
 app.put(
-  "/api/streamers/:id",
+  "/api/channels/:id",
   verifyToken,
-  upload.single("image"),
+  upload.fields([
+    { name: "avatar", maxCount: 1 },
+    { name: "banner", maxCount: 1 },
+  ]),
   async (req, res) => {
     try {
       const id = Number(req.params.id);
 
-      const validation = streamerSchema.safeParse(req.body);
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        return res.status(400).json({
+          message: "ID channel tidak valid",
+        });
+      }
+
+      const validation = channelSchema.safeParse(req.body);
 
       if (!validation.success) {
         return res.status(400).json({
@@ -162,115 +260,185 @@ app.put(
       }
 
       const [existing]: any = await pool.query(
-        "SELECT public_id FROM streamers WHERE id = ? LIMIT 1",
+        "SELECT * FROM channels WHERE id = ? LIMIT 1",
         [id],
       );
 
       if (existing.length === 0) {
         return res.status(404).json({
-          message: "Streamer tidak ditemukan",
+          message: "Channel tidak ditemukan",
         });
       }
 
-      const { namast, kategorist, subscriber, views } = validation.data;
-      let image_url: string = "";
-      let public_id: string | null = existing[0].public_id ?? null;
+      const requester = (req as any).user;
+      const isOwner = existing[0].user_id === requester.id;
+      const isAdmin = requester.role === "admin";
 
-      if (req.file) {
+      if (!isOwner && !isAdmin) {
+        return res.status(403).json({
+          message: "Akses ditolak. Bukan pemilik channel.",
+        });
+      }
+
+      const { name, description, subscriber_count } = validation.data;
+      const files = req.files as
+        | { [fieldname: string]: Express.Multer.File[] }
+        | undefined;
+
+      let avatar_url: string | null = existing[0].avatar_url;
+      let avatar_public_id: string | null = existing[0].avatar_public_id;
+      let banner_url: string | null = existing[0].banner_url;
+      let banner_public_id: string | null = existing[0].banner_public_id;
+      let old_avatar_public_id: string | null = null;
+      let old_banner_public_id: string | null = null;
+
+      if (files?.avatar?.[0]) {
         const uploaded = await uploadBufferToCloudinary(
-          req.file.buffer,
-          req.file.mimetype,
-          "streamers",
+          files.avatar[0].buffer,
+          files.avatar[0].mimetype,
+          "channels/avatars",
         );
-        image_url = uploaded.secure_url;
-        public_id = uploaded.public_id;
+        avatar_url = uploaded.secure_url;
+        avatar_public_id = uploaded.public_id;
+        old_avatar_public_id = existing[0].avatar_public_id ?? null;
+      }
 
-        if (existing[0].public_id) {
-          await cloudinary.uploader.destroy(existing[0].public_id);
-        }
-      } else {
-        const [current]: any = await pool.query(
-          "SELECT image_url FROM streamers WHERE id = ? LIMIT 1",
-          [id],
+      if (files?.banner?.[0]) {
+        const uploaded = await uploadBufferToCloudinary(
+          files.banner[0].buffer,
+          files.banner[0].mimetype,
+          "channels/banners",
         );
-        image_url = current[0].image_url;
+        banner_url = uploaded.secure_url;
+        banner_public_id = uploaded.public_id;
+        old_banner_public_id = existing[0].banner_public_id ?? null;
       }
 
       const [result]: any = await pool.query(
-        `UPDATE streamers
-      SET namast = ?,
-          kategorist = ?,
-          subscriber = ?,
-          views = ?,
-          image_url = ?,
-          public_id = ?
-      WHERE id = ?`,
-        [namast, kategorist, subscriber, views, image_url, public_id, id],
+        `UPDATE channels
+        SET name = ?,
+            description = ?,
+            avatar_url = ?,
+            avatar_public_id = ?,
+            banner_url = ?,
+            banner_public_id = ?,
+            subscriber_count = ?
+        WHERE id = ?`,
+        [
+          name,
+          description ?? null,
+          avatar_url,
+          avatar_public_id,
+          banner_url,
+          banner_public_id,
+          subscriber_count ?? existing[0].subscriber_count,
+          id,
+        ],
       );
 
       if (result.affectedRows === 0) {
         return res.status(404).json({
-          message: "Streamer tidak ditemukan",
+          message: "Channel tidak ditemukan",
         });
       }
 
+      if (old_avatar_public_id) {
+        await cloudinary.uploader.destroy(old_avatar_public_id);
+      }
+      if (old_banner_public_id) {
+        await cloudinary.uploader.destroy(old_banner_public_id);
+      }
+
       res.json({
-        message: "Berhasil mengubah streamer",
+        message: "Berhasil mengubah channel",
+        data: {
+          id,
+          name,
+          description: description ?? null,
+          avatar_url,
+          avatar_public_id,
+          banner_url,
+          banner_public_id,
+          subscriber_count: subscriber_count ?? existing[0].subscriber_count,
+        },
       });
     } catch (error) {
-      console.error(error);
+      console.error("ERROR PUT CHANNEL:", error);
 
       res.status(500).json({
-        message: "Gagal mengubah streamer",
+        message: "Gagal mengubah channel",
       });
     }
   },
 );
 
-app.delete("/api/streamers/:id", verifyToken, async (req, res) => {
+app.delete("/api/channels/:id", verifyToken, async (req, res) => {
   try {
     const id = Number(req.params.id);
 
     if (!Number.isSafeInteger(id) || id <= 0) {
       return res.status(400).json({
-        message: "ID streamer tidak valid",
+        message: "ID channel tidak valid",
       });
     }
 
     const [existing]: any = await pool.query(
-      "SELECT public_id FROM streamers WHERE id = ? LIMIT 1",
+      "SELECT * FROM channels WHERE id = ? LIMIT 1",
       [id],
     );
 
     if (existing.length === 0) {
       return res.status(404).json({
-        message: "Streamer tidak ditemukan",
+        message: "Channel tidak ditemukan",
       });
     }
 
-    if (existing[0].public_id) {
-      await cloudinary.uploader.destroy(existing[0].public_id);
+    const requester = (req as any).user;
+    const isOwner = existing[0].user_id === requester.id;
+    const isAdmin = requester.role === "admin";
+
+    if (!isOwner && !isAdmin) {
+      return res.status(403).json({
+        message: "Akses ditolak. Bukan pemilik channel.",
+      });
+    }
+
+    const [channelVideos]: any = await pool.query(
+      "SELECT image_public_id FROM videos WHERE channel_id = ?",
+      [id],
+    );
+
+    if (existing[0].avatar_public_id) {
+      await cloudinary.uploader.destroy(existing[0].avatar_public_id);
+    }
+    if (existing[0].banner_public_id) {
+      await cloudinary.uploader.destroy(existing[0].banner_public_id);
+    }
+    for (const v of channelVideos) {
+      if (v.image_public_id) {
+        await cloudinary.uploader.destroy(v.image_public_id);
+      }
     }
 
     const [result]: any = await pool.query(
-      "DELETE FROM streamers WHERE id = ?",
+      "DELETE FROM channels WHERE id = ?",
       [id],
     );
 
     if (result.affectedRows === 0) {
       return res.status(404).json({
-        message: "Streamer tidak ditemukan",
+        message: "Channel tidak ditemukan",
       });
     }
 
     res.json({
-      message: "Berhasil menghapus streamer",
+      message: "Berhasil menghapus channel",
     });
   } catch (error) {
-    console.error("ERROR DELETE STREAMER:", error);
+    console.error("ERROR DELETE CHANNEL:", error);
 
     res.status(500).json({
-      message: "Gagal menghapus streamer",
+      message: "Gagal menghapus channel",
     });
   }
 });
