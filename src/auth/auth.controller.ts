@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import bcrypt from "bcryptjs";
 import dotenv from "dotenv";
 import jwt from "jsonwebtoken";
 import pool from "../db/index.ts";
@@ -35,9 +36,11 @@ export class AuthController {
         });
       }
 
+      const hashedPassword = await bcrypt.hash(password, 10);
+
       const [result]: any = await pool.query(
         "INSERT INTO users (username, email, password, role) VALUES (?, ?, ?, 'user')",
-        [username, email, password],
+        [username, email, hashedPassword],
       );
 
       const token = jwt.sign(
@@ -90,7 +93,7 @@ export class AuthController {
       }
 
       const user = rows[0];
-      const isMatch = password === user.password;
+      const isMatch = await bcrypt.compare(password, user.password);
 
       if (!isMatch) {
         return res.status(401).json({
