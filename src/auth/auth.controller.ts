@@ -36,7 +36,7 @@ export class AuthController {
       }
 
       const [result]: any = await pool.query(
-        "INSERT INTO users (username, email, password) VALUES (?, ?, ?)",
+        "INSERT INTO users (username, email, password, role) VALUES (?, ?, ?, 'user')",
         [username, email, password],
       );
 
@@ -51,7 +51,7 @@ export class AuthController {
       return res.status(201).json({
         success: true,
         message: "Register berhasil",
-        data: { id: result.insertId, username, email },
+        data: { id: result.insertId, username, email, role: "user" },
         token,
       });
     } catch (error) {

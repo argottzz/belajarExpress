@@ -54,7 +54,7 @@ app.get("/api/me", verifyToken, async (req, res) => {
   try {
     const userId = (req as any).user.id;
     const [rows]: any = await pool.query(
-      "SELECT id, username, email FROM users WHERE id = ? LIMIT 1",
+      "SELECT id, username, email, role FROM users WHERE id = ? LIMIT 1",
       [userId],
     );
 
@@ -226,6 +226,54 @@ app.put(
     }
   },
 );
+
+app.delete("/api/streamers/:id", verifyToken, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      return res.status(400).json({
+        message: "ID streamer tidak valid",
+      });
+    }
+
+    const [existing]: any = await pool.query(
+      "SELECT public_id FROM streamers WHERE id = ? LIMIT 1",
+      [id],
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({
+        message: "Streamer tidak ditemukan",
+      });
+    }
+
+    if (existing[0].public_id) {
+      await cloudinary.uploader.destroy(existing[0].public_id);
+    }
+
+    const [result]: any = await pool.query(
+      "DELETE FROM streamers WHERE id = ?",
+      [id],
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        message: "Streamer tidak ditemukan",
+      });
+    }
+
+    res.json({
+      message: "Berhasil menghapus streamer",
+    });
+  } catch (error) {
+    console.error("ERROR DELETE STREAMER:", error);
+
+    res.status(500).json({
+      message: "Gagal menghapus streamer",
+    });
+  }
+});
 
 app.get("/api/youtubers", verifyToken, async (req, res) => {
   try {
@@ -465,6 +513,96 @@ app.delete("/api/youtubers/:id", verifyToken, async (req, res) => {
     });
   }
 });
+
+app.get("/api/users", verifyToken, adminMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      "SELECT id, username, email, role, created_at FROM users ORDER BY id ASC",
+    );
+
+    res.json({
+      message: "Berhasil mengambil data user",
+      data: rows,
+    });
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      message: "Gagal mengambil data user",
+    });
+  }
+});
+
+const updateRoleSchema = z.object({
+  role: z.enum(["admin", "user"]),
+});
+
+app.put(
+  "/api/users/:id/role",
+  verifyToken,
+  adminMiddleware,
+  async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        return res.status(400).json({
+          message: "ID user tidak valid",
+        });
+      }
+
+      const validation = updateRoleSchema.safeParse(req.body);
+
+      if (!validation.success) {
+        return res.status(400).json({
+          message: "Role tidak valid, gunakan 'admin' atau 'user'",
+          error: validation.error.issues,
+        });
+      }
+
+      const requesterId = (req as any).user.id;
+
+      if (id === requesterId) {
+        return res.status(400).json({
+          message: "Tidak bisa mengubah role sendiri",
+        });
+      }
+
+      const [existing]: any = await pool.query(
+        "SELECT id, role FROM users WHERE id = ? LIMIT 1",
+        [id],
+      );
+
+      if (existing.length === 0) {
+        return res.status(404).json({
+          message: "User tidak ditemukan",
+        });
+      }
+
+      const [result]: any = await pool.query(
+        "UPDATE users SET role = ? WHERE id = ?",
+        [validation.data.role, id],
+      );
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({
+          message: "User tidak ditemukan",
+        });
+      }
+
+      res.json({
+        message: "Berhasil mengubah role user",
+        data: { id, role: validation.data.role },
+      });
+    } catch (error) {
+      console.error(error);
+
+      res.status(500).json({
+        message: "Gagal mengubah role user",
+      });
+    }
+  },
+);
 
 app.delete("/api/users/:id", verifyToken, adminMiddleware, async (req, res) => {
   try {
